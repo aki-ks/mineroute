@@ -27,6 +27,7 @@ pub enum HandlerMessage<CT: ConnectionType> {
     SendPacket(CT::Out),
     SetProtocol(Protocol),
     EnableCompression(Option<usize>),
+    Disconnect(),
 }
 impl<CT: ConnectionType> Message for HandlerMessage<CT> {
     type Result = Result<(), ()>;

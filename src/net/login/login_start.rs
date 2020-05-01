@@ -4,7 +4,7 @@ use crate::net::buffer::{Buffer, BufferMut};
 /// Request to login with a certain username
 #[derive(Debug, Clone)]
 pub struct LoginStartPacket {
-    name: String,
+    pub name: String,
 }
 
 impl Packet for LoginStartPacket {}

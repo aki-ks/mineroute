@@ -53,6 +53,10 @@ impl<C: ConnectionManager<Client>> StreamHandler<Result<PacketServerEnum, ()>> f
             self.connection.disconnect();
         }
     }
+
+    fn finished(&mut self, _ctx: &mut Self::Context) {
+        self.downstream.do_send(HandlerMessage::Disconnect());
+    }
 }
 
 impl<C: ConnectionManager<Client>> Handler<HandlerMessage<Server>> for ProxyServerManager<C> {
@@ -70,6 +74,10 @@ impl<C: ConnectionManager<Client>> Handler<HandlerMessage<Server>> for ProxyServ
                 self.connection.enable_compression(size_limit);
                 Ok(())
             },
+            HandlerMessage::Disconnect() => {
+                self.connection.disconnect();
+                Ok(())
+            }
         }
     }
 }

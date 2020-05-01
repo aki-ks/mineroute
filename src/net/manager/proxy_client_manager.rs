@@ -1,6 +1,6 @@
 use std::net::{IpAddr, SocketAddr, Ipv4Addr};
 use std::rc::Rc;
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 use actix::prelude::*;
 use actix::io::WriteHandler;
 use tokio::net::TcpStream;
@@ -13,23 +13,34 @@ use crate::net::status::{StatusRequestPacket, StatusResponsePacket, PingPacket, 
 use crate::net::manager::{ProxyServerManager, HandlePacket, HandlerMessage, ConnectionManager, StatusServerManager};
 use crate::net::status::server_status::ServerInfo;
 use crate::net::play::RawPacket;
+use crate::server_state::Configuration;
+use std::ops::Deref;
 
 /// Manage a connection from a client to this server.
 ///
 /// This server will act as a proxy server,
 /// forwarding all packets to a defined upstream.
 pub struct ProxyClientManager {
+    config: Rc<RwLock<Configuration>>,
     connection: ClientConnection<Self>,
     handshake: Option<HandshakePacket>,
     upstream: Rc<Mutex<Option<Addr<ProxyServerManager<ProxyClientManager>>>>>,
+
+    /// The name of the user if already connected
+    name: Option<String>,
+    /// The hostname used to connect to the server
+    upstream_host: Option<String>,
 }
 
 impl ProxyClientManager {
-    pub fn new(stream: TcpStream, ctx: &mut Context<Self>) -> ProxyClientManager {
+    pub fn new(config: Rc<RwLock<Configuration>>, stream: TcpStream, ctx: &mut Context<Self>) -> ProxyClientManager {
         ProxyClientManager {
+            config,
             connection: ClientConnection::new(stream, ctx),
             handshake: None,
             upstream: Rc::new(Mutex::new(None)),
+            name: None,
+            upstream_host: None,
         }
     }
 }
@@ -57,6 +68,21 @@ impl StreamHandler<Result<PacketClientEnum, ()>> for ProxyClientManager {
             self.connection.disconnect();
         }
     }
+
+    fn finished(&mut self, _ctx: &mut Self::Context) {
+        if let &Some(ref upstream) = self.upstream.lock().unwrap().deref() {
+            upstream.do_send(HandlerMessage::Disconnect())
+        }
+
+        if let Some(ref upstream_host) = self.upstream_host {
+            if let Some(ref name) = self.name {
+                let mut config = self.config.write().unwrap();
+                if let Some(server) = config.get_server_mut(upstream_host) {
+                    server.remove_player(name);
+                }
+            }
+        }
+    }
 }
 
 impl Handler<HandlerMessage<Client>> for ProxyClientManager {
@@ -74,6 +100,10 @@ impl Handler<HandlerMessage<Client>> for ProxyClientManager {
                 self.connection.enable_compression(size_limit);
                 Ok(())
             }
+            HandlerMessage::Disconnect() => {
+                self.connection.disconnect();
+                Ok(())
+            }
         }
     }
 }
@@ -85,6 +115,7 @@ impl HandlePacket<Client, HandshakePacket> for ProxyClientManager {
         match packet.next_protocol {
             Protocol::Status | Protocol::Login => {
                 self.connection.set_protocol(packet.next_protocol.clone());
+                self.upstream_host = Some(packet.server_address.clone());
                 self.handshake = Some(packet);
                 Ok(())
             }
@@ -95,29 +126,32 @@ impl HandlePacket<Client, HandshakePacket> for ProxyClientManager {
 
 impl HandlePacket<Client, StatusRequestPacket> for ProxyClientManager {
     fn handle_packet(&mut self, _packet: StatusRequestPacket, ctx: &mut Self::Context) -> Result<(), ()> {
-        let server_info_future = async {
-            let addr = {
-                let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-                SocketAddr::new(localhost, 25566)
+        let config = self.config.read().unwrap();
+        let upstream_server = config.get_server(self.upstream_host.as_ref().unwrap());
+
+        if let Some(server) = upstream_server {
+            let upstream_addr = server.upstream.clone();
+
+            let server_info_future = async move {
+                let stream = TcpStream::connect(upstream_addr).await.unwrap();
+                let (sender, receiver) = oneshot::channel::<Result<ServerInfo, ()>>();
+                StatusServerManager::create(|ctx| {
+                    StatusServerManager::new(stream, ctx, |server_info| {
+                        sender.send(server_info).unwrap();
+                    })
+                });
+                receiver.await.unwrap_or(Err(()))
             };
 
-            let stream = TcpStream::connect(addr).await.unwrap();
-            let (sender, receiver) = oneshot::channel::<Result<ServerInfo, ()>>();
-            StatusServerManager::create(|ctx| {
-                StatusServerManager::new(stream, ctx, |server_info| {
-                    sender.send(server_info).unwrap();
-                })
-            });
-            receiver.await.unwrap_or(Err(()))
-        };
-
-        ctx.spawn(server_info_future.into_actor(self).map(|server_info, manager, ctx| {
-            match server_info {
-                Ok(status) => manager.connection.send_packet(PacketServerEnum::StatusResponse(StatusResponsePacket { status })).unwrap(),
-                _ => ctx.stop(),
-            }
-        }));
-
+            ctx.spawn(server_info_future.into_actor(self).map(|server_info, manager, ctx| {
+                match server_info {
+                    Ok(status) => manager.connection.send_packet(PacketServerEnum::StatusResponse(StatusResponsePacket { status })).unwrap(),
+                    _ => ctx.stop(),
+                }
+            }));
+        } else {
+            self.connection.disconnect();
+        }
         Ok(())
     }
 }
@@ -134,9 +168,16 @@ impl HandlePacket<Client, PingPacket> for ProxyClientManager {
 
 impl HandlePacket<Client, LoginStartPacket> for ProxyClientManager {
     fn handle_packet(&mut self, packet: LoginStartPacket, ctx: &mut Self::Context) -> Result<(), ()> {
-        let handshake = self.handshake.take().unwrap();
+        let handshake = self.handshake.clone().unwrap();
         let downstream = ctx.address().clone();
         let self_upstream = self.upstream.clone();
+
+        let name = packet.name.clone();
+        self.name = Some(name.clone());
+
+        let mut config = self.config.write().unwrap();
+        config.get_server_mut(self.upstream_host.as_ref().unwrap()).unwrap().add_player(name);
+
         ctx.wait(async move {
             let addr = {
                 let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));

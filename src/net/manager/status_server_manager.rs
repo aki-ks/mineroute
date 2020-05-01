@@ -77,6 +77,10 @@ impl<F: FnOnce(Result<ServerInfo, ()>) + Unpin + 'static> Handler<HandlerMessage
                 self.connection.enable_compression(size_limit);
                 Ok(())
             },
+            HandlerMessage::Disconnect() => {
+                self.connection.disconnect();
+                Ok(())
+            }
         }
     }
 }
