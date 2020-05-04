@@ -1,4 +1,4 @@
-use std::net::{IpAddr, SocketAddr, Ipv4Addr};
+use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::{Mutex, RwLock};
 use actix::prelude::*;
@@ -28,8 +28,12 @@ pub struct ProxyClientManager {
 
     /// The name of the user if already connected
     name: Option<String>,
+
     /// The hostname used to connect to the server
-    upstream_host: Option<String>,
+    connection_host: Option<String>,
+
+    /// The hostname that this connection should get proxied to
+    upstream_host: Option<SocketAddr>,
 }
 
 impl ProxyClientManager {
@@ -40,6 +44,7 @@ impl ProxyClientManager {
             handshake: None,
             upstream: Rc::new(Mutex::new(None)),
             name: None,
+            connection_host: None,
             upstream_host: None,
         }
     }
@@ -74,7 +79,7 @@ impl StreamHandler<Result<PacketClientEnum, ()>> for ProxyClientManager {
             upstream.do_send(HandlerMessage::Disconnect())
         }
 
-        if let Some(ref upstream_host) = self.upstream_host {
+        if let Some(ref upstream_host) = self.connection_host {
             if let Some(ref name) = self.name {
                 let mut config = self.config.write().unwrap();
                 if let Some(server) = config.get_server_mut(upstream_host) {
@@ -114,10 +119,22 @@ impl HandlePacket<Client, HandshakePacket> for ProxyClientManager {
     fn handle_packet(&mut self, packet: HandshakePacket, _ctx: &mut Self::Context) -> Result<(), ()> {
         match packet.next_protocol {
             Protocol::Status | Protocol::Login => {
-                self.connection.set_protocol(packet.next_protocol.clone());
-                self.upstream_host = Some(packet.server_address.clone());
-                self.handshake = Some(packet);
-                Ok(())
+                let address = packet.server_address.clone();
+                let config = self.config.write().unwrap();
+
+                match config.get_server(&address) {
+                    Some(upstream) => {
+                        self.connection.set_protocol(packet.next_protocol.clone());
+                        self.connection_host = Some(address);
+                        self.upstream_host = Some(upstream.upstream.clone());
+                        self.handshake = Some(packet);
+                        Ok(())
+                    },
+                    None => {
+                        self.connection.disconnect();
+                        Err(())
+                    },
+                }
             }
             _ => Err(()),
         }
@@ -126,32 +143,26 @@ impl HandlePacket<Client, HandshakePacket> for ProxyClientManager {
 
 impl HandlePacket<Client, StatusRequestPacket> for ProxyClientManager {
     fn handle_packet(&mut self, _packet: StatusRequestPacket, ctx: &mut Self::Context) -> Result<(), ()> {
-        let config = self.config.read().unwrap();
-        let upstream_server = config.get_server(self.upstream_host.as_ref().unwrap());
+        let upstream_addr = self.upstream_host.unwrap();
 
-        if let Some(server) = upstream_server {
-            let upstream_addr = server.upstream.clone();
+        let server_info_future = async move {
+            let stream = TcpStream::connect(upstream_addr).await.unwrap();
+            let (sender, receiver) = oneshot::channel::<Result<ServerInfo, ()>>();
+            StatusServerManager::create(|ctx| {
+                StatusServerManager::new(stream, ctx, |server_info| {
+                    sender.send(server_info).unwrap();
+                })
+            });
+            receiver.await.unwrap_or(Err(()))
+        };
 
-            let server_info_future = async move {
-                let stream = TcpStream::connect(upstream_addr).await.unwrap();
-                let (sender, receiver) = oneshot::channel::<Result<ServerInfo, ()>>();
-                StatusServerManager::create(|ctx| {
-                    StatusServerManager::new(stream, ctx, |server_info| {
-                        sender.send(server_info).unwrap();
-                    })
-                });
-                receiver.await.unwrap_or(Err(()))
-            };
+        ctx.spawn(server_info_future.into_actor(self).map(|server_info, manager, ctx| {
+            match server_info {
+                Ok(status) => manager.connection.send_packet(PacketServerEnum::StatusResponse(StatusResponsePacket { status })).unwrap(),
+                _ => ctx.stop(),
+            }
+        }));
 
-            ctx.spawn(server_info_future.into_actor(self).map(|server_info, manager, ctx| {
-                match server_info {
-                    Ok(status) => manager.connection.send_packet(PacketServerEnum::StatusResponse(StatusResponsePacket { status })).unwrap(),
-                    _ => ctx.stop(),
-                }
-            }));
-        } else {
-            self.connection.disconnect();
-        }
         Ok(())
     }
 }
@@ -175,16 +186,15 @@ impl HandlePacket<Client, LoginStartPacket> for ProxyClientManager {
         let name = packet.name.clone();
         self.name = Some(name.clone());
 
-        let mut config = self.config.write().unwrap();
-        config.get_server_mut(self.upstream_host.as_ref().unwrap()).unwrap().add_player(name);
+        { // Scope that frees the config write lock as soon as it is no longer required
+            let mut config = self.config.write().unwrap();
+            let server = config.get_server_mut(self.connection_host.as_ref().unwrap()).unwrap();
+            server.add_player(name);
+        }
 
+        let upstream = self.upstream_host.clone().unwrap();
         ctx.wait(async move {
-            let addr = {
-                let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-                SocketAddr::new(localhost, 25566)
-            };
-
-            let stream = TcpStream::connect(addr).await.unwrap();
+            let stream = TcpStream::connect(upstream).await.unwrap();
 
             let upstream = ProxyServerManager::create(|ctx| {
                 ProxyServerManager::new(downstream, stream, ctx)

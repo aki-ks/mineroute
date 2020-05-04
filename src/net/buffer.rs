@@ -13,9 +13,9 @@ pub fn var_int_size(mut int: i32) -> usize {
 }
 
 pub trait Buffer {
-    fn read_u8(&mut self) -> u8;
-    fn read_u16(&mut self) -> u16;
-    fn read_u64(&mut self) -> u64;
+    fn read_u8(&mut self) -> Result<u8, ()>;
+    fn read_u16(&mut self) -> Result<u16, ()>;
+    fn read_u64(&mut self) -> Result<u64, ()>;
     fn read_var_int(&mut self) -> Result<i32, ()>;
     fn read_byte_array(&mut self) -> Result<Vec<u8>, ()>;
     fn read_string(&mut self) -> Result<String, ()>;
@@ -24,22 +24,34 @@ pub trait Buffer {
 }
 
 impl Buffer for BytesMut {
-    fn read_u8(&mut self) -> u8 {
-        self.get_u8()
+    fn read_u8(&mut self) -> Result<u8, ()> {
+        if self.remaining() >= 1 {
+            Ok(self.get_u8())
+        } else {
+            Err(())
+        }
     }
 
-    fn read_u16(&mut self) -> u16 {
-        self.get_u16()
+    fn read_u16(&mut self) -> Result<u16, ()> {
+        if self.remaining() >= 2 {
+            Ok(self.get_u16())
+        } else {
+            Err(())
+        }
     }
 
-    fn read_u64(&mut self) -> u64 {
-        self.get_u64()
+    fn read_u64(&mut self) -> Result<u64, ()> {
+        if self.remaining() >= 4 {
+            Ok(self.get_u64())
+        } else {
+            Err(())
+        }
     }
 
     fn read_var_int(&mut self) -> Result<i32, ()> {
         let mut result = 0;
         for i in 0..5 {
-            let byte = self.get_u8();
+            let byte = self.read_u8()?;
             result |= ((byte & 127) as i32) << (i * 7);
             if byte & 128 == 0 {
                 return Ok(result);
@@ -51,7 +63,7 @@ impl Buffer for BytesMut {
 
     fn read_byte_array(&mut self) -> Result<Vec<u8>, ()> {
         let size = self.read_var_int()? as usize;
-        Ok((0..size).map(|_| self.get_u8()).collect())
+        (0..size).map(|_| self.read_u8()).collect::<Result<Vec<u8>, ()>>()
     }
 
     fn read_string(&mut self) -> Result<String, ()> {

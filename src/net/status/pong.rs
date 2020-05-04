@@ -12,7 +12,7 @@ impl Packet for PongPacket {}
 impl PacketCodec for PongPacket {
     fn decode<B: Buffer>(buf: &mut B) -> Result<Self, ()> {
         Ok(PongPacket {
-            payload: buf.read_u64()
+            payload: buf.read_u64()?
         })
     }
 

@@ -13,7 +13,7 @@ impl Packet for PingPacket {}
 impl PacketCodec for PingPacket {
     fn decode<B: Buffer>(buf: &mut B) -> Result<Self, ()> {
         Ok(PingPacket {
-            payload: buf.read_u64()
+            payload: buf.read_u64()?
         })
     }
 

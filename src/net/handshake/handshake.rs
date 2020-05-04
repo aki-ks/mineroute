@@ -18,7 +18,7 @@ impl PacketCodec for HandshakePacket {
         Ok(HandshakePacket {
             protocol_version: buf.read_var_int()?,
             server_address: buf.read_string()?,
-            server_port: buf.read_u16(),
+            server_port: buf.read_u16()?,
             next_protocol: Protocol::from_int(buf.read_var_int()?).ok_or(())?
         })
     }
