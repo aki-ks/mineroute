@@ -12,10 +12,15 @@ use crate::net::pipeline::framing::FrameCodec;
 
 const MIN_BUFFER_SIZE: usize = 256;
 
-// A Stream of incoming packets.
-// It applies the processors configured in the pipeline.
+/// A Stream of decoded incoming packets.
+///
+/// It utilizes the processors configured
+/// in the pipeline to decode the stream.
 pub struct PipelineStream<C: ConnectionType> {
     pipeline: Rc<RwLock<HandlerPipeline<C>>>,
+
+    /// A buffer that temporary stores not yet completely
+    /// received packet frames until they are complete.
     read_buf: BytesMut,
 }
 

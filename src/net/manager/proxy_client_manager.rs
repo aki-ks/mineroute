@@ -182,19 +182,25 @@ impl HandlePacket<Client, LoginStartPacket> for ProxyClientManager {
         drop(config); // config lock is no longer required
 
         let upstream = self.upstream_host.clone().unwrap();
-        ctx.wait(async move {
-            let stream = TcpStream::connect(upstream).await.unwrap();
+        let future = async move {
+            let stream = TcpStream::connect(upstream).await.map_err(|_| ())?;
 
             let upstream = ProxyServerManager::create(|ctx| {
                 ProxyServerManager::new(downstream, stream, ctx)
             });
 
-            upstream.send(HandlerMessage::SendPacket(PacketClientEnum::Handshake(handshake))).await.unwrap().unwrap();
-            upstream.send(HandlerMessage::SetProtocol(Protocol::Login)).await.unwrap().unwrap();
-            upstream.send(HandlerMessage::SendPacket(PacketClientEnum::LoginStart(packet))).await.unwrap().unwrap();
+            upstream.send(HandlerMessage::SendPacket(PacketClientEnum::Handshake(handshake))).await.unwrap_or_else(|_| Err(()))?;
+            upstream.send(HandlerMessage::SetProtocol(Protocol::Login)).await.unwrap_or_else(|_| Err(()))?;
+            upstream.send(HandlerMessage::SendPacket(PacketClientEnum::LoginStart(packet))).await.unwrap_or_else(|_| Err(()))?;
 
-            *self_upstream.lock().unwrap() = Some(upstream);
-        }.into_actor(self));
+            Ok(upstream)
+        }.into_actor(self).map(move |upstream_result: Result<Addr<ProxyServerManager<ProxyClientManager>>, ()>, actor, _ctx| {
+            match upstream_result {
+                Ok(upstream) => *self_upstream.lock().unwrap() = Some(upstream),
+                Err(_) => actor.connection.disconnect(),
+            }
+        });
+        ctx.wait(future);
         Ok(())
     }
 }
