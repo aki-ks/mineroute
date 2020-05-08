@@ -1,22 +1,27 @@
 use std::rc::Rc;
 use std::sync::RwLock;
-use actix::{Addr, AsyncContext};
+use actix::AsyncContext;
 use actix::io::SinkWrite;
 use tokio::net::TcpStream;
-use crate::net::{Server, PacketClientEnum, Protocol};
+use crate::net::{Protocol, ConnectionType};
 use crate::net::pipeline::{HandlerPipeline, PipelineSink, PipelineStream};
 use crate::net::manager::ConnectionManager;
 
-/// A connection to a remote minecraft server held when connected to a server as client.
-pub struct ServerConnection<H: ConnectionManager<Server>> {
-    sink: SinkWrite<PacketClientEnum, PipelineSink<Server>>,
-    pipeline: Rc<RwLock<HandlerPipeline<Server>>>,
-    #[allow(unused)]
-    addr: Addr<H>,
+/// A connection to a remote minecraft server or client.
+///
+/// This struct gets encapsulated by a corresponding manager
+/// actor in whose asynchronity context it will run and notifies
+/// it about all incoming packets.
+///
+/// It exposes an interface allowing the manager actor to send
+/// packets to the server and execute protocol changes.
+pub struct Connection<CT: ConnectionType> {
+    sink: SinkWrite<CT::Out, PipelineSink<CT>>,
+    pipeline: Rc<RwLock<HandlerPipeline<CT>>>,
 }
 
-impl<H: ConnectionManager<Server>> ServerConnection<H> {
-    pub fn new(stream: TcpStream, ctx: &mut H::Context) -> ServerConnection<H> {
+impl<CT: ConnectionType> Connection<CT> {
+    pub fn new<H: ConnectionManager<CT>>(stream: TcpStream, ctx: &mut H::Context) -> Connection<CT> {
         let pipeline = Rc::new(RwLock::new(HandlerPipeline::new(stream)));
 
         ctx.add_stream(PipelineStream::new(pipeline.clone()));
@@ -24,14 +29,13 @@ impl<H: ConnectionManager<Server>> ServerConnection<H> {
         let sink = PipelineSink::new(pipeline.clone());
         let sink = SinkWrite::new(sink, ctx);
 
-        ServerConnection {
+        Connection {
             pipeline,
             sink,
-            addr: ctx.address().clone(),
         }
     }
 
-    pub fn send_packet(&mut self, packet: PacketClientEnum) -> Result<(), ()> {
+    pub fn send_packet(&mut self, packet: CT::Out) -> Result<(), ()> {
         self.sink.write(packet)
     }
 

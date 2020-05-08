@@ -4,25 +4,22 @@ use std::sync::{Mutex, RwLock};
 use actix::prelude::*;
 use actix::io::WriteHandler;
 use tokio::net::TcpStream;
-use futures::channel::oneshot;
 use futures::FutureExt;
 use crate::net::handshake::HandshakePacket;
 use crate::net::*;
 use crate::net::login::LoginStartPacket;
 use crate::net::status::{StatusRequestPacket, StatusResponsePacket, PingPacket, PongPacket};
 use crate::net::manager::{ProxyServerManager, HandlePacket, HandlerMessage, ConnectionManager, StatusServerManager};
-use crate::net::status::server_status::ServerInfo;
 use crate::net::play::RawPacket;
 use crate::server_state::Configuration;
-use std::ops::Deref;
 
-/// Manage a connection from a client to this server.
+/// Manage a client connection to this server.
 ///
 /// This server will act as a proxy server,
 /// forwarding all packets to a defined upstream.
 pub struct ProxyClientManager {
     config: Rc<RwLock<Configuration>>,
-    connection: ClientConnection<Self>,
+    connection: Connection<Client>,
     handshake: Option<HandshakePacket>,
     upstream: Rc<Mutex<Option<Addr<ProxyServerManager<ProxyClientManager>>>>>,
 
@@ -40,7 +37,7 @@ impl ProxyClientManager {
     pub fn new(config: Rc<RwLock<Configuration>>, stream: TcpStream, ctx: &mut Context<Self>) -> ProxyClientManager {
         ProxyClientManager {
             config,
-            connection: ClientConnection::new(stream, ctx),
+            connection: Connection::new::<Self>(stream, ctx),
             handshake: None,
             upstream: Rc::new(Mutex::new(None)),
             name: None,
@@ -75,7 +72,7 @@ impl StreamHandler<Result<PacketClientEnum, ()>> for ProxyClientManager {
     }
 
     fn finished(&mut self, _ctx: &mut Self::Context) {
-        if let &Some(ref upstream) = self.upstream.lock().unwrap().deref() {
+        if let Some(ref upstream) = *self.upstream.lock().unwrap() {
             upstream.do_send(HandlerMessage::Disconnect())
         }
 
@@ -145,23 +142,16 @@ impl HandlePacket<Client, StatusRequestPacket> for ProxyClientManager {
     fn handle_packet(&mut self, _packet: StatusRequestPacket, ctx: &mut Self::Context) -> Result<(), ()> {
         let upstream_addr = self.upstream_host.unwrap();
 
-        let server_info_future = async move {
-            let stream = TcpStream::connect(upstream_addr).await.unwrap();
-            let (sender, receiver) = oneshot::channel::<Result<ServerInfo, ()>>();
-            StatusServerManager::create(|ctx| {
-                StatusServerManager::new(stream, ctx, |server_info| {
-                    sender.send(server_info).unwrap();
-                })
+        let server_info = StatusServerManager::fetch_status(upstream_addr)
+            .into_actor(self)
+            .map(|server_info, manager, ctx| {
+                match server_info {
+                    Ok(status) => manager.connection.send_packet(PacketServerEnum::StatusResponse(StatusResponsePacket { status })).unwrap(),
+                    _ => ctx.stop(),
+                }
             });
-            receiver.await.unwrap_or(Err(()))
-        };
 
-        ctx.spawn(server_info_future.into_actor(self).map(|server_info, manager, ctx| {
-            match server_info {
-                Ok(status) => manager.connection.send_packet(PacketServerEnum::StatusResponse(StatusResponsePacket { status })).unwrap(),
-                _ => ctx.stop(),
-            }
-        }));
+        ctx.spawn(server_info);
 
         Ok(())
     }
@@ -186,11 +176,10 @@ impl HandlePacket<Client, LoginStartPacket> for ProxyClientManager {
         let name = packet.name.clone();
         self.name = Some(name.clone());
 
-        { // Scope that frees the config write lock as soon as it is no longer required
-            let mut config = self.config.write().unwrap();
-            let server = config.get_server_mut(self.connection_host.as_ref().unwrap()).unwrap();
-            server.add_player(name);
-        }
+        let mut config = self.config.write().unwrap();
+        let server = config.get_server_mut(self.connection_host.as_ref().unwrap()).unwrap();
+        server.add_player(name);
+        drop(config); // config lock is no longer required
 
         let upstream = self.upstream_host.clone().unwrap();
         ctx.wait(async move {

@@ -1,10 +1,10 @@
 use actix::prelude::*;
 use actix::io::WriteHandler;
 use tokio::net::TcpStream;
-use crate::net::{ServerConnection, PacketServerEnum, Protocol, Server, Client};
+use futures::FutureExt;
+use crate::net::{Connection, PacketServerEnum, Protocol, Server, Client};
 use crate::net::manager::{HandlerMessage, HandlePacket, ConnectionManager};
 use crate::net::login::{CompressionPacket, LoginSuccessPacket};
-use futures::FutureExt;
 
 /// Manage a connection to a remote server in which we act as client.
 /// The received packets are proxied to some other client.
@@ -13,14 +13,14 @@ pub struct ProxyServerManager<C: ConnectionManager<Client>> {
     downstream: Addr<C>,
 
     /// The connection to the remove server
-    connection: ServerConnection<Self>,
+    connection: Connection<Server>,
 }
 
 impl<C: ConnectionManager<Client>> ProxyServerManager<C> {
     pub fn new(downstream: Addr<C>, stream: TcpStream, ctx: &mut Context<Self>) -> ProxyServerManager<C> {
         ProxyServerManager {
             downstream,
-            connection: ServerConnection::new(stream, ctx),
+            connection: Connection::new::<Self>(stream, ctx),
         }
     }
 }

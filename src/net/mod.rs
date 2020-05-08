@@ -6,24 +6,22 @@ pub mod login;
 pub mod play;
 pub mod status;
 
-mod client_connection;
-mod server_connection;
+mod connection;
 mod wire_codec;
 
-pub use client_connection::ClientConnection;
-pub use server_connection::ServerConnection;
+pub use connection::Connection;
 
 use actix::Message;
 use crate::net::buffer::{Buffer, BufferMut};
 use crate::net::wire_codec::{WireCodec, ServerWireCodec, ClientWireCodec};
 
-pub trait ConnectionType: Sized {
+pub trait ConnectionType: Sized + 'static {
     type In;
     type Out;
     type WC: WireCodec<Self>;
 }
 
-/// Connection from a client to a server
+/// ConnectionType for connections from a client to a server
 pub struct Server;
 impl ConnectionType for Server {
     type In = PacketServerEnum;
@@ -31,7 +29,7 @@ impl ConnectionType for Server {
     type WC = ServerWireCodec;
 }
 
-/// Connection from a server to a client
+/// Connectiontype for connections from a server to a client
 pub struct Client;
 impl ConnectionType for Client {
     type In = PacketClientEnum;
@@ -67,6 +65,7 @@ pub enum PacketServerEnum {
     Raw(play::RawPacket),
 }
 
+// Implementing Message for packets allows them to be send to actix actors
 impl Message for PacketServerEnum { type Result = (); }
 impl Message for PacketClientEnum { type Result = (); }
 

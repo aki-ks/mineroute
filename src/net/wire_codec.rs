@@ -2,15 +2,13 @@ use crate::net::*;
 use crate::net::buffer::{Buffer, BufferMut};
 use crate::net::play::RawPacket;
 
-/// A utility responsible for mapping packets to their ids.
+/// A utility encapsulating the whole packet serialization process
 pub trait WireCodec<C: ConnectionType> {
+    /// Deserialize the packet data of a packet based on its id and the current protocol state
     fn read_packet<B: Buffer>(protocol: &Protocol, packet_id: u8, buf: &mut B) -> Result<C::In, ()>;
-    fn write_packet<B: BufferMut>(protocol: &Protocol, packet: &C::Out, buf: &mut B) -> Result<(), ()>;
-}
 
-fn write<B: BufferMut, P: PacketCodec>(packet_id: u8, packet: &P, buf: &mut B) -> Result<(), ()> {
-    buf.write_u8(packet_id);
-    packet.encode(buf)
+    /// Serialize the provided packet by writing its packet id and data into the provided byte buffer.
+    fn write_packet<B: BufferMut>(protocol: &Protocol, packet: &C::Out, buf: &mut B) -> Result<(), ()>;
 }
 
 pub struct ClientWireCodec;
@@ -111,4 +109,9 @@ impl WireCodec<Server> for ServerWireCodec {
             },
         }
     }
+}
+
+fn write<B: BufferMut, P: PacketCodec>(packet_id: u8, packet: &P, buf: &mut B) -> Result<(), ()> {
+    buf.write_u8(packet_id);
+    packet.encode(buf)
 }

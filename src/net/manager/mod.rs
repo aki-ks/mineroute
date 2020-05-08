@@ -22,7 +22,7 @@ pub trait HandlePacket<CT: ConnectionType, P: Packet>: ConnectionManager<CT> {
     fn handle_packet(&mut self, packet: P, ctx: &mut Self::Context) -> Result<(), ()>;
 }
 
-/// Messages supported by [ConnectionManager] actors
+/// Messages supported by [ConnectionManager] actors acting as proxy
 pub enum HandlerMessage<CT: ConnectionType> {
     SendPacket(CT::Out),
     SetProtocol(Protocol),

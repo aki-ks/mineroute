@@ -2,7 +2,7 @@ use std::str::FromStr;
 use bytes::{Buf, BufMut, BytesMut, Bytes};
 use uuid::Uuid;
 
-/// Calculate the size (in bytes) of a number when encoded as var-int
+/// Calculate the wire size of a number when encoded as var-int in bytes
 pub fn var_int_size(mut int: i32) -> usize {
     let mut size = 1;
     while (int & !127) != 0 {
@@ -12,6 +12,8 @@ pub fn var_int_size(mut int: i32) -> usize {
     size
 }
 
+/// A definition of read operations for various data types
+/// used by the Minecraft protocol
 pub trait Buffer {
     fn read_u8(&mut self) -> Result<u8, ()>;
     fn read_u16(&mut self) -> Result<u16, ()>;
@@ -79,6 +81,8 @@ impl Buffer for BytesMut {
     }
 }
 
+/// A definition of write operations for various data types
+/// used by the Minecraft protocol
 pub trait BufferMut {
     fn write_u8(&mut self, byte: u8);
     fn write_u16(&mut self, short: u16);
