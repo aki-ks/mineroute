@@ -1,7 +1,6 @@
 [package]
-name = "minecraft-server"
+name = "mineroute"
 version = "0.1.0"
-authors = ["aki-ks <aki_ks.git@m.mader.dev>"]
 edition = "2018"
 
 [dependencies]

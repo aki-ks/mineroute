@@ -4,19 +4,18 @@ use actix::io::WriteHandler;
 use tokio::net::TcpStream;
 use futures::channel::oneshot::{channel, Sender};
 use crate::net::{Connection, PacketServerEnum, PacketClientEnum, Protocol, Server};
-use crate::net::status::{StatusResponsePacket, PongPacket, StatusRequestPacket, server_status};
+use crate::net::status::{StatusResponsePacket, StatusRequestPacket, server_status};
 use crate::net::status::server_status::ServerInfo;
 use crate::net::handshake::HandshakePacket;
-use crate::net::manager::{HandlerMessage, HandlePacket, ConnectionManager};
+use crate::net::manager::{HandlerMessage, PacketHandler, ConnectionManager};
 
 /// Manage a connection to a remote server where we act as a client.
 ///
-/// The handler operates on connections of the [Protocol::Status].
 /// It requests the [ServerInfo] from the server and
-/// once recieved, passes it to the callback function.
+/// once recieved, passes it to supplied oneshot channel.
 pub struct StatusServerManager {
     connection: Connection<Server>,
-    sender: Option<Sender<Result<ServerInfo, ()>>>,
+    channel: Option<Sender<Result<ServerInfo, ()>>>,
 }
 
 impl StatusServerManager {
@@ -28,7 +27,7 @@ impl StatusServerManager {
         StatusServerManager::create(|ctx| {
             StatusServerManager {
                 connection: Connection::new::<Self>(stream, ctx),
-                sender: Some(sender),
+                channel: Some(sender),
             }
         });
         receiver.await.map_err(|_| ())?
@@ -59,19 +58,22 @@ impl Actor for StatusServerManager {
 }
 
 impl StreamHandler<Result<PacketServerEnum, ()>> for StatusServerManager {
+    /// Handle incoming packets by delegating to the corresponding [[PacketHandler]].
     fn handle(&mut self, packet: Result<PacketServerEnum, ()>, ctx: &mut Self::Context) {
         let handle_result = packet.and_then(|packet| match packet {
             PacketServerEnum::StatusResponse(packet) => self.handle_packet(packet, ctx),
-            PacketServerEnum::Pong(packet) => self.handle_packet(packet, ctx),
+            PacketServerEnum::Pong(_) => Ok(()),
 
             _ => Err(()),
         });
+
         if let Err(()) = handle_result {
             self.connection.disconnect();
         }
     }
 }
 
+/// Handle connection control messages send to this actor
 impl Handler<HandlerMessage<Server>> for StatusServerManager {
     type Result = Result<(), ()>;
     fn handle(&mut self, message: HandlerMessage<Server>, _ctx: &mut Self::Context) -> Self::Result {
@@ -95,20 +97,15 @@ impl Handler<HandlerMessage<Server>> for StatusServerManager {
 
 impl WriteHandler<()> for StatusServerManager {}
 
-impl HandlePacket<Server, StatusResponsePacket> for StatusServerManager {
+/// Forward the received server status through the oneshot channel and
+/// close the connection to the server.
+impl PacketHandler<Server, StatusResponsePacket> for StatusServerManager {
     fn handle_packet(&mut self, packet: StatusResponsePacket, _ctx: &mut Self::Context) -> Result<(), ()> {
-        if let Some(sender) = self.sender.take() {
+        if let Some(sender) = self.channel.take() {
             sender.send(Ok(packet.status)).map_err(|_| ())?;
         }
 
         self.connection.disconnect();
-        Ok(())
-    }
-}
-
-impl HandlePacket<Server, PongPacket> for StatusServerManager {
-    fn handle_packet(&mut self, _packet: PongPacket, _ctx: &mut Self::Context) -> Result<(), ()> {
-        // Accept ping packets without reacting to them
         Ok(())
     }
 }

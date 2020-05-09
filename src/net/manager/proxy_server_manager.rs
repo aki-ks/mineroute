@@ -3,7 +3,7 @@ use actix::io::WriteHandler;
 use tokio::net::TcpStream;
 use futures::FutureExt;
 use crate::net::{Connection, PacketServerEnum, Protocol, Server, Client};
-use crate::net::manager::{HandlerMessage, HandlePacket, ConnectionManager};
+use crate::net::manager::{HandlerMessage, PacketHandler, ConnectionManager};
 use crate::net::login::{CompressionPacket, LoginSuccessPacket};
 
 /// Manage a connection to a remote server in which we act as client.
@@ -12,7 +12,7 @@ pub struct ProxyServerManager<C: ConnectionManager<Client>> {
     /// proxy packets received from the server to this client
     downstream: Addr<C>,
 
-    /// The connection to the remove server
+    /// The connection to the remote upstream server
     connection: Connection<Server>,
 }
 
@@ -32,6 +32,7 @@ impl<C: ConnectionManager<Client>> Actor for ProxyServerManager<C> {
 }
 
 impl<C: ConnectionManager<Client>> StreamHandler<Result<PacketServerEnum, ()>> for ProxyServerManager<C> {
+    /// Handle incoming packets by delegating to the corresponding [[PacketHandler]].
     fn handle(&mut self, packet: Result<PacketServerEnum, ()>, ctx: &mut Self::Context) {
         let handle_result = packet.and_then(|packet| {
             self.downstream.send(HandlerMessage::SendPacket(packet.clone()))
@@ -59,6 +60,8 @@ impl<C: ConnectionManager<Client>> StreamHandler<Result<PacketServerEnum, ()>> f
     }
 }
 
+/// Handle connection control messages that this actor may
+/// receive from a linked [[ProxyClientManager]] actor
 impl<C: ConnectionManager<Client>> Handler<HandlerMessage<Server>> for ProxyServerManager<C> {
     type Result = Result<(), ()>;
     fn handle(&mut self, message: HandlerMessage<Server>, _ctx: &mut Self::Context) -> Self::Result {
@@ -84,7 +87,7 @@ impl<C: ConnectionManager<Client>> Handler<HandlerMessage<Server>> for ProxyServ
 
 impl<C: ConnectionManager<Client>> WriteHandler<()> for ProxyServerManager<C> {}
 
-impl<C: ConnectionManager<Client>> HandlePacket<Server, CompressionPacket> for ProxyServerManager<C> {
+impl<C: ConnectionManager<Client>> PacketHandler<Server, CompressionPacket> for ProxyServerManager<C> {
     fn handle_packet(&mut self, packet: CompressionPacket, ctx: &mut Self::Context) -> Result<(), ()> {
         self.connection.enable_compression(packet.size_limit);
         self.downstream.send(HandlerMessage::EnableCompression(packet.size_limit))
@@ -94,7 +97,7 @@ impl<C: ConnectionManager<Client>> HandlePacket<Server, CompressionPacket> for P
     }
 }
 
-impl<C: ConnectionManager<Client>> HandlePacket<Server, LoginSuccessPacket> for ProxyServerManager<C> {
+impl<C: ConnectionManager<Client>> PacketHandler<Server, LoginSuccessPacket> for ProxyServerManager<C> {
     fn handle_packet(&mut self, _packet: LoginSuccessPacket, ctx: &mut Self::Context) -> Result<(), ()> {
         self.connection.set_protocol(Protocol::Play);
         self.downstream.send(HandlerMessage::SetProtocol(Protocol::Play))

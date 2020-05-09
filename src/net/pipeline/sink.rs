@@ -4,7 +4,8 @@ use std::pin::Pin;
 use bytes::{BytesMut, Buf, BufMut};
 use futures::{Sink, ready};
 use futures::task::{Context, Poll};
-use tokio::io::AsyncWrite;
+use tokio::io::{AsyncWrite, WriteHalf};
+use tokio::net::TcpStream;
 use crate::net::pipeline::HandlerPipeline;
 use crate::net::ConnectionType;
 use crate::net::pipeline::framing::FrameCodec;
@@ -12,13 +13,15 @@ use crate::net::pipeline::framing::FrameCodec;
 /// A Sink that writes incoming packets to the wire,
 /// applying all processors defined in the pipeline.
 pub struct PipelineSink<C: ConnectionType> {
+    w: Pin<Box<WriteHalf<TcpStream>>>,
     pipeline: Rc<RwLock<HandlerPipeline<C>>>,
     buffer: Option<BytesMut>,
 }
 
 impl<C: ConnectionType> PipelineSink<C> {
-    pub fn new(pipeline: Rc<RwLock<HandlerPipeline<C>>>) -> PipelineSink<C> {
+    pub fn new(w: WriteHalf<TcpStream>, pipeline: Rc<RwLock<HandlerPipeline<C>>>) -> PipelineSink<C> {
         PipelineSink {
+            w: Box::pin(w),
             pipeline,
             buffer: None,
         }
@@ -42,8 +45,7 @@ impl<C: ConnectionType> PipelineSink<C> {
     fn flush_pending_buffer(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), ()>> {
         if let Some(buffer) = &mut self.buffer {
             while buffer.has_remaining() {
-                let mut pipeline = self.pipeline.write().unwrap();
-                let written_bytes = ready!(pipeline.w.as_mut().poll_write(cx, buffer)).map_err(|_| ())?;
+                let written_bytes = ready!(self.w.as_mut().poll_write(cx, buffer)).map_err(|_| ())?;
                 buffer.advance(written_bytes);
             }
             self.buffer = None;
@@ -75,15 +77,11 @@ impl<C: ConnectionType> Sink<C::Out> for PipelineSink<C> {
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         ready!(self.flush_pending_buffer(cx))?;
-
-        let mut pipeline = self.pipeline.write().unwrap();
-        pipeline.w.as_mut().poll_flush(cx).map_err(|_| ())
+        self.w.as_mut().poll_flush(cx).map_err(|_| ())
     }
 
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         ready!(self.flush_pending_buffer(cx))?;
-
-        let mut pipeline = self.pipeline.write().unwrap();
-        pipeline.w.as_mut().poll_shutdown(cx).map_err(|_| ())
+        self.w.as_mut().poll_shutdown(cx).map_err(|_| ())
     }
 }

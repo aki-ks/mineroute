@@ -9,7 +9,7 @@ use crate::net::handshake::HandshakePacket;
 use crate::net::*;
 use crate::net::login::LoginStartPacket;
 use crate::net::status::{StatusRequestPacket, StatusResponsePacket, PingPacket, PongPacket};
-use crate::net::manager::{ProxyServerManager, HandlePacket, HandlerMessage, ConnectionManager, StatusServerManager};
+use crate::net::manager::{ProxyServerManager, PacketHandler, HandlerMessage, ConnectionManager, StatusServerManager};
 use crate::net::play::RawPacket;
 use crate::server_state::Configuration;
 
@@ -54,6 +54,7 @@ impl Actor for ProxyClientManager {
 }
 
 impl StreamHandler<Result<PacketClientEnum, ()>> for ProxyClientManager {
+    /// Handle incoming packets by delegating to the corresponding [[PacketHandler]].
     fn handle(&mut self, packet: Result<PacketClientEnum, ()>, ctx: &mut Self::Context) {
         let handle_result = packet.and_then(|packet| match packet {
             PacketClientEnum::Handshake(packet) => self.handle_packet(packet, ctx),
@@ -71,6 +72,10 @@ impl StreamHandler<Result<PacketClientEnum, ()>> for ProxyClientManager {
         }
     }
 
+    /// Handle a disconnection of a player from the mineroute server.
+    ///
+    /// If the player was connected to an upstream server,
+    /// he should get removed from its player list.
     fn finished(&mut self, _ctx: &mut Self::Context) {
         if let Some(ref upstream) = *self.upstream.lock().unwrap() {
             upstream.do_send(HandlerMessage::Disconnect())
@@ -87,6 +92,8 @@ impl StreamHandler<Result<PacketClientEnum, ()>> for ProxyClientManager {
     }
 }
 
+/// Handle connection control messages that this actor may
+/// receive from a linked [[ProxyServerManager]] actor
 impl Handler<HandlerMessage<Client>> for ProxyClientManager {
     type Result = Result<(), ()>;
     fn handle(&mut self, message: HandlerMessage<Client>, _ctx: &mut Self::Context) -> Self::Result {
@@ -112,33 +119,31 @@ impl Handler<HandlerMessage<Client>> for ProxyClientManager {
 
 impl WriteHandler<()> for ProxyClientManager {}
 
-impl HandlePacket<Client, HandshakePacket> for ProxyClientManager {
+// Handle the initial handshake packet by determining
+// the upstream server requested by the client.
+impl PacketHandler<Client, HandshakePacket> for ProxyClientManager {
     fn handle_packet(&mut self, packet: HandshakePacket, _ctx: &mut Self::Context) -> Result<(), ()> {
-        match packet.next_protocol {
-            Protocol::Status | Protocol::Login => {
-                let address = packet.server_address.clone();
-                let config = self.config.write().unwrap();
+        if let Protocol::Status | Protocol::Login = packet.next_protocol {
+            let address = packet.server_address.clone();
+            let config = self.config.write().unwrap();
 
-                match config.get_server(&address) {
-                    Some(upstream) => {
-                        self.connection.set_protocol(packet.next_protocol.clone());
-                        self.connection_host = Some(address);
-                        self.upstream_host = Some(upstream.upstream.clone());
-                        self.handshake = Some(packet);
-                        Ok(())
-                    },
-                    None => {
-                        self.connection.disconnect();
-                        Err(())
-                    },
-                }
+            if let Some(upstream) = config.get_server(&address) {
+                self.connection.set_protocol(packet.next_protocol.clone());
+                self.connection_host = Some(address);
+                self.upstream_host = Some(upstream.upstream.clone());
+                self.handshake = Some(packet);
+                return Ok(())
             }
-            _ => Err(()),
         }
+
+        self.connection.disconnect();
+        Err(())
     }
 }
 
-impl HandlePacket<Client, StatusRequestPacket> for ProxyClientManager {
+/// Handle status requests by connecting to the upstream server as a client,
+/// asking it for its status and forwarding that response to the client
+impl PacketHandler<Client, StatusRequestPacket> for ProxyClientManager {
     fn handle_packet(&mut self, _packet: StatusRequestPacket, ctx: &mut Self::Context) -> Result<(), ()> {
         let upstream_addr = self.upstream_host.unwrap();
 
@@ -152,12 +157,12 @@ impl HandlePacket<Client, StatusRequestPacket> for ProxyClientManager {
             });
 
         ctx.spawn(server_info);
-
         Ok(())
     }
 }
 
-impl HandlePacket<Client, PingPacket> for ProxyClientManager {
+/// Immediately respond to incoming ping packets with a PongPacket
+impl PacketHandler<Client, PingPacket> for ProxyClientManager {
     fn handle_packet(&mut self, packet: PingPacket, _ctx: &mut Self::Context) -> Result<(), ()> {
         let packet = PacketServerEnum::Pong(PongPacket {
             payload: packet.payload,
@@ -167,7 +172,7 @@ impl HandlePacket<Client, PingPacket> for ProxyClientManager {
     }
 }
 
-impl HandlePacket<Client, LoginStartPacket> for ProxyClientManager {
+impl PacketHandler<Client, LoginStartPacket> for ProxyClientManager {
     fn handle_packet(&mut self, packet: LoginStartPacket, ctx: &mut Self::Context) -> Result<(), ()> {
         let handshake = self.handshake.clone().unwrap();
         let downstream = ctx.address().clone();
@@ -205,7 +210,7 @@ impl HandlePacket<Client, LoginStartPacket> for ProxyClientManager {
     }
 }
 
-impl HandlePacket<Client, RawPacket> for ProxyClientManager {
+impl PacketHandler<Client, RawPacket> for ProxyClientManager {
     fn handle_packet(&mut self, packet: RawPacket, ctx: &mut Self::Context) -> Result<(), ()> {
         let upstream = self.upstream.lock().unwrap();
         let upstream = upstream.as_ref().unwrap();

@@ -4,7 +4,7 @@ use actix::AsyncContext;
 use actix::io::SinkWrite;
 use tokio::net::TcpStream;
 use crate::net::{Protocol, ConnectionType};
-use crate::net::pipeline::{HandlerPipeline, PipelineSink, PipelineStream};
+use crate::net::pipeline::{HandlerPipeline, PipelineSink};
 use crate::net::manager::ConnectionManager;
 
 /// A connection to a remote minecraft server or client.
@@ -22,16 +22,11 @@ pub struct Connection<CT: ConnectionType> {
 
 impl<CT: ConnectionType> Connection<CT> {
     pub fn new<H: ConnectionManager<CT>>(stream: TcpStream, ctx: &mut H::Context) -> Connection<CT> {
-        let pipeline = Rc::new(RwLock::new(HandlerPipeline::new(stream)));
-
-        ctx.add_stream(PipelineStream::new(pipeline.clone()));
-
-        let sink = PipelineSink::new(pipeline.clone());
-        let sink = SinkWrite::new(sink, ctx);
-
+        let (pipeline, sink, stream) = HandlerPipeline::new(stream);
+        ctx.add_stream(stream);
         Connection {
             pipeline,
-            sink,
+            sink: SinkWrite::new(sink, ctx),
         }
     }
 

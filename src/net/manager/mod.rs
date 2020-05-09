@@ -18,7 +18,7 @@ pub trait ConnectionManager<CT: ConnectionType> where
     Self: WriteHandler<()> {}
 
 /// Handle an incoming packet retrieved from a server/client.
-pub trait HandlePacket<CT: ConnectionType, P: Packet>: ConnectionManager<CT> {
+pub trait PacketHandler<CT: ConnectionType, P: Packet>: ConnectionManager<CT> {
     fn handle_packet(&mut self, packet: P, ctx: &mut Self::Context) -> Result<(), ()>;
 }
 
