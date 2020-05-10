@@ -1,104 +1,96 @@
+use std::io;
 use std::sync::{RwLock, Arc};
+use std::net::SocketAddr;
+use serde::{Serialize, Deserialize};
+use actix_web::*;
+use actix_web::body::Body;
+use actix_web::web::HttpResponse;
+use actix_files::Files;
 use crate::server_state::{Configuration, ServerConfig};
 
-use serde::{Serialize, Deserialize};
-
-use actix_web::{get, post, delete, web, App, HttpServer, Responder, HttpResponse};
-use std::net::SocketAddr;
-
-//RICHARD: Überhaupt sinnvoll die Funktionen in Woker auszulagern? funktionen hier ja nicht alzu groß?
-// use crate::web::worker::{add_server, get_servers_worker};
+type Conf = Arc<RwLock<Configuration>>;
 
 #[derive(Serialize, Deserialize, Debug)]
-struct UploadedServer {
+struct Server {
     domain: String,
     sockaddr: String,
 }
 
-pub async fn webserver_run(config: Arc<RwLock<Configuration>>) -> std::io::Result<()> {
-    HttpServer::new(move || App::new().app_data(config.clone())
-        .service(get_servers)
-        .service(get_server)
-        .service(post_server)
-        .service(delete_server)
-        )
-        .bind("127.0.0.1:8080")?
-        .run()
-        .await
+#[derive(Serialize, Deserialize, Debug)]
+struct ServerStatus {
+    domain: String,
+    sockaddr: String,
+    players: Vec<String>,
 }
 
-#[post("/servers")]
-async fn post_server(_info: web::Path<()>, config: web::Data<Arc<RwLock<Configuration>>>, body: web::Json<UploadedServer>) -> impl Responder {
+pub async fn webserver_run(config: Conf) -> io::Result<()> {
+    let server = HttpServer::new(move || {
+        App::new().data(config.clone())
+            .service(get_servers)
+            .service(get_server)
+            .service(post_server)
+            .service(delete_server)
+            .service(Files::new("/", "static/").index_file("index.html"))
+    });
+
+    server.bind("127.0.0.1:8080")?.run().await
+}
+
+#[post("/api/servers")]
+async fn post_server(config: web::Data<Conf>, body: web::Json<Server>) -> impl Responder {
     match body.sockaddr.parse::<SocketAddr>() {
-        Ok(server_address) => {// server hinzufügen
-            //RICHARD: ist as_ref hier das richtige? oder wie kann ich den string clonen? .copy geht auf string ja nicht
-            config.write().unwrap().add_server(body.domain.as_ref(), ServerConfig::new(server_address));
-            HttpResponse::Created().body("Server created")
-
-
-            body.domain.as_ref()
-            &body.domain
+        Ok(server_address) => {
+            let server = ServerConfig::new(server_address.clone());
+            config.write().unwrap().add_server(&body.domain, server);
+            HttpResponse::Created().json(Server {
+                domain: body.domain.clone(),
+                sockaddr: body.sockaddr.clone(),
+            })
         }
-        Err(_error) => {HttpResponse::BadRequest().body("Bad Socket Address")}
+        Err(_error) => HttpResponse::BadRequest().body("Bad Socket Address"),
     }
 }
-
-
 
 #[get("/api/servers")]
-async fn get_servers(_info: web::Path<()>, config: web::Data<Arc<RwLock<Configuration>>>) -> impl Responder {
-    // RICHARD: Wie mache ich das zu einem String bzw zu json? Der Reader kann da so nicht ausliefern
-    config.read().unwrap().get_servers();
-    ""
-}
-
-#[delete("/api/servers")]
-async fn delete_server(_info: web::Path<()>, config: web::Data<Arc<RwLock<Configuration>>>) -> impl Responder {
-    // RICHARD: Wie komm ich an die parameter? https://stackoverflow.com/questions/51156656/how-do-i-get-the-parameters-from-a-post-request-from-a-html-form-in-actix-web
-    // ist das der richtige Weg? was mach ich da?
-    config.write().unwrap().remove_server("TODO HIER DEN PARAMETER");
-    HttpResponse::Ok()
-}
-
-
-/**
-{ config.write().unwrap().remove_server("b.mc.de");
-
-match "127.0.0.1:8081".parse() {
-Ok(server_address) => {// server hinzufügen
-config.write().unwrap().add_server("b.mc.de", ServerConfig::new(server_address))
-}
-Err(error) => {
-error.to_string();
-}
-
-};
-{
-// geschweifte klammern damit kein deadlock
-match config.write().unwrap().get_server_mut("b.mc.de") {
-//upstream addr wo hin geroutet wird
-Some(server) => { server.upstream = "1.1.1.1".parse().unwrap() }
-None => {}
-}
-}
-
-HttpResponse::BadRequest().body("da lief was schief!")}
-**/
-
-
-#[get("/api/server")]
-async fn get_server(_info: web::Path<()>, config: web::Data<Arc<RwLock<Configuration>>>) -> impl Responder {
-    // RICHARD: Wie komm ich an die parameter? https://stackoverflow.com/questions/51156656/how-do-i-get-the-parameters-from-a-post-request-from-a-html-form-in-actix-web
-    // ist das der richtige Weg? was mach ich da?
-    match config.read().unwrap().get_server("TODO Hier dem Paramter") {
-        Some(_server) => {
-            // return server data
-            // RICHARD Wie bekomm ich das Server objekt als JSON?
-            HttpResponse::Ok()
+async fn get_servers(config: web::Data<Conf>) -> impl Responder {
+    let config = config.read().unwrap();
+    let server_list: Vec<_> = config.get_server_hosts().iter()
+        .map(|server_socket| {
+            let server_data = config.get_server(server_socket).unwrap();
+            Server {
+                domain: (*server_socket).clone(),
+                sockaddr: server_data.upstream.to_string(),
             }
-        None => {HttpResponse::NotFound()}
-    }
+        })
+        .collect();
 
-
+    HttpResponse::Ok().json(&server_list)
 }
 
+#[delete("/api/servers/{key}")]
+async fn delete_server(host: web::Path<String>, config: web::Data<Conf>) -> impl Responder {
+    let server = config.write().unwrap().remove_server(&host);
+    if let Some(server) = server {
+        respond_with_server(&host, &server)
+    } else {
+        HttpResponse::NotFound().finish()
+    }
+}
+
+#[get("/api/servers/{key}")]
+async fn get_server(host: web::Path<String>, config: web::Data<Conf>) -> impl Responder {
+    let config = config.read().unwrap();
+    if let Some(server) = config.get_server(&host) {
+        respond_with_server(&host, server)
+    } else {
+        HttpResponse::NotFound().finish()
+    }
+}
+
+fn respond_with_server(domain: &str, server: &ServerConfig) -> HttpResponse<Body> {
+    HttpResponse::Ok().json(ServerStatus {
+        domain: domain.parse().unwrap(),
+        sockaddr: server.upstream.to_string(),
+        players: server.players.read().unwrap().clone(),
+    })
+}

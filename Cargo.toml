@@ -6,10 +6,13 @@ edition = "2018"
 [dependencies]
 actix = "0.9"
 actix-rt = "1.0"
+actix-web = "2.0"
+actix-files = "0.2"
 
 tokio = { version = "0.2", features = ["dns", "tcp", "full"] }
 tokio-util = "0.2"
 futures = "0.3"
+futures-util = "0.3"
 bytes = "0.5"
 deflate = "0.8"
 inflate = "0.4"

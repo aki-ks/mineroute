@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 use std::rc::Rc;
-use std::sync::{Mutex, RwLock};
+use std::sync::{Mutex, RwLock, Arc};
 use actix::prelude::*;
 use actix::io::WriteHandler;
 use tokio::net::TcpStream;
@@ -18,7 +18,7 @@ use crate::server_state::Configuration;
 /// This server will act as a proxy server,
 /// forwarding all packets to a defined upstream.
 pub struct ProxyClientManager {
-    config: Rc<RwLock<Configuration>>,
+    config: Arc<RwLock<Configuration>>,
     connection: Connection<Client>,
     handshake: Option<HandshakePacket>,
     upstream: Rc<Mutex<Option<Addr<ProxyServerManager<ProxyClientManager>>>>>,
@@ -34,7 +34,7 @@ pub struct ProxyClientManager {
 }
 
 impl ProxyClientManager {
-    pub fn new(config: Rc<RwLock<Configuration>>, stream: TcpStream, ctx: &mut Context<Self>) -> ProxyClientManager {
+    pub fn new(config: Arc<RwLock<Configuration>>, stream: TcpStream, ctx: &mut Context<Self>) -> ProxyClientManager {
         ProxyClientManager {
             config,
             connection: Connection::new::<Self>(stream, ctx),

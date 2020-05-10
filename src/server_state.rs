@@ -14,8 +14,16 @@ impl Configuration {
         }
     }
 
+    pub fn get_server_hosts(&self) -> Vec<&String> {
+        self.servers.keys().collect()
+    }
+
     pub fn add_server(&mut self, host: &str, server: ServerConfig) {
         self.servers.insert(host.to_owned(), server);
+    }
+
+    pub fn remove_server(&mut self, host: &str) -> Option<ServerConfig> {
+        self.servers.remove(host)
     }
 
     pub fn get_server(&self, host: &str) -> Option<&ServerConfig> {
